@@ -1,7 +1,5 @@
 # AutoBackup
 
-[🇮🇹 Italiano](README.md) · 🇬🇧 English
-
 Automatic MySQL database backup and compressed site archive, in a single dependency-free PHP file.
 
 Include it in your admin panel code (for example after login) and, on the first access of each day, it saves the database as a `.sql.gz` file in a protected folder. On demand, from the browser or the command line, it also creates a zip of the whole site.
