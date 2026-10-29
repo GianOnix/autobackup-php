@@ -1,6 +1,6 @@
 <?php
 /**
- * AutoBackup v.1.0
+ * AutoBackup v.1.1
  * Copyright (2026) by Onix.it
  * MIT License: see the LICENSE file
  * @license MIT
