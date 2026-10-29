@@ -2,125 +2,125 @@
 /**
  * AutoBackup v.1.0
  * Copyright (2026) by Onix.it
- * Licenza MIT: vedi il file LICENSE
+ * MIT License: see the LICENSE file
  * @license MIT
  *
- * Script autonomo senza dipendenze
- * Compatibile con PHP 7.4 e 8.x; usa solo mysqli, zlib (gzopen) e ZipArchive/PharData.
+ * Standalone script, no dependencies.
+ * Compatible with PHP 7.4 and 8.x; uses only mysqli, zlib (gzopen) and ZipArchive/PharData.
  *
- * COME SI USA
- *  1. Backup giornaliero del database (include semplice, ad esempio dopo il login del backend):
+ * HOW TO USE
+ *  1. Daily database backup (plain include, for example after the admin panel login):
  *         include __DIR__ . '/autobackup.php';
- *     Il primo include della giornata salva il database in <cartella>/db_<nome>_<AAAA-MM-GG>.sql.gz,
- *     gli altri trovano il file di oggi e non fanno nulla. Non produce output e non lancia eccezioni:
- *     gli errori finiscono in <cartella>/autobackup.log.
- *  2. Dal browser, con la chiave segreta 'chiave_web' (vuota = accesso dal web disabilitato, risponde 404):
- *         autobackup.php?azione=test&chiave=...   controlla percorsi, cartella, connessione e ambiente
- *         autobackup.php?azione=db&chiave=...     dump del database subito (nome con data e ora)
- *         autobackup.php?azione=sito&chiave=...   archivio compresso di tutto il sito + dump del database
- *  3. Da riga di comando: php autobackup.php test|db|sito
+ *     The first include of the day saves the database to <folder>/db_<name>_<YYYY-MM-DD>.sql.gz,
+ *     later includes find today's file and do nothing. No output, no exceptions:
+ *     errors go to <folder>/autobackup.log.
+ *  2. From the browser, with the secret 'web_key' (empty = web access disabled, responds 404):
+ *         autobackup.php?action=test&key=...   checks paths, folder, connection and environment
+ *         autobackup.php?action=db&key=...     immediate database dump (name with date and time)
+ *         autobackup.php?action=site&key=...   compressed archive of the whole site + database dump
+ *  3. From the command line: php autobackup.php test|db|site
  *
- * I file sono scritti in 'cartella' (predefinita: fuori dalla radice web, accanto alla cartella del sito),
- * creata con .htaccess e index.php di protezione. Si conservano gli ultimi 'conserva_db' dump di giorni
- * diversi e gli ultimi 'conserva_sito' archivi del sito.
+ * Files are written to 'folder' (default: outside the web root, next to the site folder),
+ * created with a protective .htaccess and index.php. The last 'keep_db' dumps of different days
+ * and the last 'keep_site' site archives are kept.
  *
- * Questo file contiene le credenziali del database: va trattato come config.php.
+ * This file contains the database credentials: treat it like a configuration file.
  */
 
 $autobackup_config = array(
-    // Cartella dei backup (percorso assoluto). Predefinita: cartella "backup" accanto alla radice del sito,
-    // quindi fuori dalla cartella pubblica (es. /home/utente/backup accanto a /home/utente/public_html).
-    'cartella'          => dirname(__DIR__) . '/backup',
+    // Backup folder (absolute path). Default: a "backup" folder next to the site root,
+    // hence outside the public folder (e.g. /home/user/backup next to /home/user/public_html).
+    'folder'            => dirname(__DIR__) . '/backup',
 
-    // Radice del sito da archiviare con azione=sito.
-    'radice_sito'       => __DIR__,
+    // Site root to archive with action=site.
+    'site_root'         => __DIR__,
 
-    // Fuso orario per data e ora nei nomi dei file e nel log.
-    'fuso_orario'       => 'Europe/Rome',
+    // Time zone for dates and times in file names and in the log.
+    'timezone'          => 'Europe/Rome',
 
-    // Credenziali del database.
+    // Database credentials.
     'db'                => array(
         'host'     => 'localhost',
-        'porta'    => 3306,
-        'utente'   => '',
+        'port'     => 3306,
+        'user'     => '',
         'password' => '',
-        'nome'     => '',
+        'name'     => '',
     ),
-    // Tabelle da NON salvare: per prefisso e per nome esatto.
-    'escludi_prefissi'  => array(),            // es. array('stats_')
-    'escludi_tabelle'   => array(),
+    // Tables NOT to back up: by prefix and by exact name.
+    'exclude_prefixes'  => array(),            // e.g. array('stats_')
+    'exclude_tables'    => array(),
 
-    // Quanti file conservare (i piu' recenti).
-    'conserva_db'       => 30,
-    'conserva_sito'     => 5,
+    // How many files to keep (the most recent ones).
+    'keep_db'           => 30,
+    'keep_site'         => 5,
 
-    // Chiave segreta per le azioni dal browser (?azione=...&chiave=...). Vuota = nessun accesso dal web.
-    'chiave_web'        => '',
+    // Secret key for browser actions (?action=...&key=...). Empty = no web access.
+    'web_key'           => '',
 
-    // Cartelle e file del sito esclusi dall'archivio (percorsi relativi alla radice, con /).
-    'sito_escludi'      => array('.git', 'node_modules'),
+    // Site folders and files excluded from the archive (paths relative to the root, with /).
+    'site_exclude'      => array('.git', 'node_modules'),
 
-    // Dimensione massima (byte) di un singolo INSERT multiplo nel dump.
-    'blocco_insert'     => 524288,
+    // Maximum size (bytes) of a single multi-row INSERT in the dump.
+    'insert_block'      => 524288,
 );
 
-if (!function_exists('autobackup_avvia')) {
+if (!function_exists('autobackup_run')) {
 
     /**
-     * Punto di ingresso: decide la modalita' (include, web, riga di comando) ed esegue.
-     * Non lascia uscire eccezioni: in modalita' include il chiamante non deve accorgersi di nulla.
+     * Entry point: detects the mode (include, web, command line) and runs.
+     * Lets no exception out: in include mode the caller must not notice anything.
      */
-    function autobackup_avvia(array $cfg)
+    function autobackup_run(array $cfg)
     {
-        static $avviato = false;
-        if ($avviato) {
-            return; // incluso due volte nella stessa richiesta: il lavoro e' gia' stato fatto
+        static $started = false;
+        if ($started) {
+            return; // included twice in the same request: the work is already done
         }
-        $avviato = true;
-        $diretto = false;
+        $started = true;
+        $direct = false;
         if (isset($_SERVER['SCRIPT_FILENAME'])) {
             $script = realpath($_SERVER['SCRIPT_FILENAME']);
-            $diretto = $script !== false && $script === realpath(__FILE__);
+            $direct = $script !== false && $script === realpath(__FILE__);
         }
         $cli = PHP_SAPI === 'cli';
 
-        // --- Include da un altro script: backup giornaliero silenzioso -------------------------------
-        if (!$diretto) {
+        // --- Included by another script: silent daily backup -----------------------------------------
+        if (!$direct) {
             try {
                 @ignore_user_abort(true);
                 @set_time_limit(300);
-                $cartella = autobackup_cartella($cfg, $errore);
-                if ($cartella === false) {
-                    autobackup_log(false, 'Cartella dei backup non disponibile: ' . $errore);
+                $folder = autobackup_folder($cfg, $error);
+                if ($folder === false) {
+                    autobackup_log(false, 'Backup folder not available: ' . $error);
                     return;
                 }
-                $esito = autobackup_db_giornaliero($cfg, $cartella, false);
-                if ($esito['stato'] === 'creato') {
-                    autobackup_log($cartella, 'Backup giornaliero creato: ' . $esito['file'] . ' (' . $esito['dettaglio'] . ')');
+                $result = autobackup_db_daily($cfg, $folder, false);
+                if ($result['status'] === 'created') {
+                    autobackup_log($folder, 'Daily backup created: ' . $result['file'] . ' (' . $result['detail'] . ')');
                 }
             } catch (Throwable $e) {
-                autobackup_log(isset($cartella) && $cartella !== false ? $cartella : false, 'ERRORE backup giornaliero: ' . $e->getMessage());
+                autobackup_log(isset($folder) && $folder !== false ? $folder : false, 'ERROR daily backup: ' . $e->getMessage());
             }
             return;
         }
 
-        // --- Richiesta diretta: dal browser (con chiave) o da riga di comando ------------------------
+        // --- Direct request: from the browser (with key) or from the command line ---------------------
         if ($cli) {
-            $azione = isset($_SERVER['argv'][1]) ? (string)$_SERVER['argv'][1] : 'test';
+            $action = isset($_SERVER['argv'][1]) ? (string)$_SERVER['argv'][1] : 'test';
         } else {
-            $chiave = isset($_GET['chiave']) ? (string)$_GET['chiave'] : '';
-            if ($cfg['chiave_web'] === '' || $chiave === '' || !hash_equals((string)$cfg['chiave_web'], $chiave)) {
+            $key = isset($_GET['key']) ? (string)$_GET['key'] : '';
+            if ($cfg['web_key'] === '' || $key === '' || !hash_equals((string)$cfg['web_key'], $key)) {
                 http_response_code(404);
                 exit;
             }
-            $azione = isset($_GET['azione']) ? (string)$_GET['azione'] : '';
+            $action = isset($_GET['action']) ? (string)$_GET['action'] : '';
             header('Content-Type: text/plain; charset=utf-8');
             header('X-Robots-Tag: noindex, nofollow');
             header('Cache-Control: no-store');
         }
-        if (!in_array($azione, array('test', 'db', 'sito'), true)) {
+        if (!in_array($action, array('test', 'db', 'site'), true)) {
             if ($cli) {
-                echo "Uso: php autobackup.php test|db|sito\n";
+                echo "Usage: php autobackup.php test|db|site\n";
                 exit(1);
             }
             http_response_code(404);
@@ -128,63 +128,63 @@ if (!function_exists('autobackup_avvia')) {
         }
 
         @ignore_user_abort(true);
-        @set_time_limit($azione === 'sito' ? 0 : 300);
-        $righe = array();
+        @set_time_limit($action === 'site' ? 0 : 300);
+        $lines = array();
         $ok = true;
-        $cartella = false;
+        $folder = false;
         try {
-            if ($azione === 'test') {
-                $righe = autobackup_test($cfg, $ok);
+            if ($action === 'test') {
+                $lines = autobackup_test($cfg, $ok);
             } else {
-                $cartella = autobackup_cartella($cfg, $errore);
-                if ($cartella === false) {
-                    throw new Exception('Cartella dei backup non disponibile: ' . $errore);
+                $folder = autobackup_folder($cfg, $error);
+                if ($folder === false) {
+                    throw new Exception('Backup folder not available: ' . $error);
                 }
-                if ($azione === 'db') {
-                    $esito = autobackup_db_giornaliero($cfg, $cartella, true);
-                    if ($esito['stato'] !== 'creato') {
-                        throw new Exception('Backup non eseguito: ' . $esito['stato']);
+                if ($action === 'db') {
+                    $result = autobackup_db_daily($cfg, $folder, true);
+                    if ($result['status'] !== 'created') {
+                        throw new Exception('Backup not performed: ' . $result['status']);
                     }
-                    autobackup_log($cartella, 'Dump su richiesta creato: ' . $esito['file'] . ' (' . $esito['dettaglio'] . ')');
-                    $righe[] = 'OK  dump del database: ' . $esito['file'] . ' (' . $esito['dettaglio'] . ')';
+                    autobackup_log($folder, 'On-demand dump created: ' . $result['file'] . ' (' . $result['detail'] . ')');
+                    $lines[] = 'OK  database dump: ' . $result['file'] . ' (' . $result['detail'] . ')';
                 } else {
-                    $esito = autobackup_sito($cfg, $cartella);
-                    autobackup_log($cartella, 'Archivio del sito creato: ' . $esito['file'] . ' (' . $esito['dettaglio'] . ')');
-                    $righe[] = 'OK  archivio del sito: ' . $esito['file'] . ' (' . $esito['dettaglio'] . ')';
+                    $result = autobackup_site($cfg, $folder);
+                    autobackup_log($folder, 'Site archive created: ' . $result['file'] . ' (' . $result['detail'] . ')');
+                    $lines[] = 'OK  site archive: ' . $result['file'] . ' (' . $result['detail'] . ')';
                 }
-                $righe[] = '    cartella: ' . $cartella;
+                $lines[] = '    folder: ' . $folder;
             }
         } catch (Throwable $e) {
             $ok = false;
-            $righe[] = 'ERRORE  ' . $e->getMessage();
-            autobackup_log($cartella, 'ERRORE azione ' . $azione . ': ' . $e->getMessage());
+            $lines[] = 'ERROR  ' . $e->getMessage();
+            autobackup_log($folder, 'ERROR action ' . $action . ': ' . $e->getMessage());
         }
         if (!$cli && !$ok) {
             http_response_code(500);
         }
-        echo "autobackup - azione: " . $azione . " - " . autobackup_ora($cfg, 'Y-m-d H:i:s') . "\n\n";
-        echo implode("\n", $righe) . "\n";
+        echo "autobackup - action: " . $action . " - " . autobackup_now($cfg, 'Y-m-d H:i:s') . "\n\n";
+        echo implode("\n", $lines) . "\n";
         if ($cli) {
             exit($ok ? 0 : 1);
         }
         exit;
     }
 
-    /** Data e ora correnti nel fuso orario configurato (UTC se non valido). */
-    function autobackup_ora(array $cfg, $formato)
+    /** Current date and time in the configured time zone (UTC if invalid). */
+    function autobackup_now(array $cfg, $format)
     {
         try {
-            $tz = new DateTimeZone($cfg['fuso_orario']);
+            $tz = new DateTimeZone($cfg['timezone']);
         } catch (Exception $e) {
             $tz = new DateTimeZone('UTC');
         }
-        autobackup_fuso($tz);
+        autobackup_tz($tz);
         $d = new DateTime('now', $tz);
-        return $d->format($formato);
+        return $d->format($format);
     }
 
-    /** Ricorda l'ultimo fuso orario valido (usato dal log, che non riceve la configurazione). */
-    function autobackup_fuso($tz = null)
+    /** Remembers the last valid time zone (used by the log, which does not receive the configuration). */
+    function autobackup_tz($tz = null)
     {
         static $memo = null;
         if ($tz !== null) {
@@ -193,31 +193,31 @@ if (!function_exists('autobackup_avvia')) {
         return $memo;
     }
 
-    /** Crea (se serve) e protegge la cartella dei backup; restituisce il percorso o false con $errore. */
-    function autobackup_cartella(array $cfg, &$errore)
+    /** Creates (if needed) and protects the backup folder; returns its path, or false with $error. */
+    function autobackup_folder(array $cfg, &$error)
     {
-        $errore = '';
-        $dir = rtrim((string)$cfg['cartella'], '/\\');
+        $error = '';
+        $dir = rtrim((string)$cfg['folder'], '/\\');
         if ($dir === '') {
-            $errore = 'percorso vuoto';
+            $error = 'empty path';
             return false;
         }
         if (!is_dir($dir) && !@mkdir($dir, 0700, true)) {
-            $errore = 'impossibile creare ' . $dir;
+            $error = 'cannot create ' . $dir;
             return false;
         }
         if (!is_writable($dir)) {
-            $errore = 'cartella non scrivibile ' . $dir;
+            $error = 'folder not writable ' . $dir;
             return false;
         }
-        $reale = realpath($dir);
-        if ($reale !== false) {
-            $dir = $reale;
+        $real = realpath($dir);
+        if ($real !== false) {
+            $dir = $real;
         }
         $htaccess = $dir . '/.htaccess';
         if (!file_exists($htaccess)) {
             @file_put_contents($htaccess,
-                "# Backup: nessun accesso dal web\n"
+                "# Backups: no web access\n"
                 . "<IfModule mod_authz_core.c>\n    Require all denied\n</IfModule>\n"
                 . "<IfModule !mod_authz_core.c>\n    Order deny,allow\n    Deny from all\n</IfModule>\n");
         }
@@ -225,7 +225,7 @@ if (!function_exists('autobackup_avvia')) {
         if (!file_exists($index)) {
             @file_put_contents($index, "<?php\nhttp_response_code(404);\n");
         }
-        // resti di esecuzioni interrotte: file temporanei piu' vecchi di un'ora
+        // leftovers of interrupted runs: temporary files older than one hour
         foreach ((array)@scandir($dir) as $f) {
             if (preg_match('/^(\..+|.+\.tmp(\.gz)?)$/', $f) && $f !== '.htaccess' && $f !== '.lock'
                 && is_file($dir . '/' . $f) && @filemtime($dir . '/' . $f) < time() - 3600) {
@@ -235,82 +235,82 @@ if (!function_exists('autobackup_avvia')) {
         return $dir;
     }
 
-    /** Scrive una riga nel log della cartella dei backup (o nel log di PHP se la cartella manca). */
-    function autobackup_log($cartella, $messaggio)
+    /** Appends a line to the log in the backup folder (or to the PHP log if the folder is missing). */
+    function autobackup_log($folder, $message)
     {
-        $tz = autobackup_fuso();
-        $ora = $tz instanceof DateTimeZone ? new DateTime('now', $tz) : new DateTime('now');
-        $riga = '[' . $ora->format('Y-m-d H:i:s') . '] ' . $messaggio;
-        if ($cartella === false || $cartella === '') {
-            @error_log('autobackup: ' . $messaggio);
+        $tz = autobackup_tz();
+        $now = $tz instanceof DateTimeZone ? new DateTime('now', $tz) : new DateTime('now');
+        $line = '[' . $now->format('Y-m-d H:i:s') . '] ' . $message;
+        if ($folder === false || $folder === '') {
+            @error_log('autobackup: ' . $message);
             return;
         }
-        $file = $cartella . '/autobackup.log';
+        $file = $folder . '/autobackup.log';
         if (is_file($file) && filesize($file) > 1048576) {
             @rename($file, $file . '.old');
         }
-        @file_put_contents($file, $riga . "\n", FILE_APPEND | LOCK_EX);
+        @file_put_contents($file, $line . "\n", FILE_APPEND | LOCK_EX);
     }
 
-    /** Nome di file sicuro (solo lettere, numeri, trattini). */
-    function autobackup_nome_sicuro($testo)
+    /** Safe file name (letters, digits, dashes only). */
+    function autobackup_safe_name($text)
     {
-        $s = preg_replace('/[^A-Za-z0-9_-]+/', '_', (string)$testo);
+        $s = preg_replace('/[^A-Za-z0-9_-]+/', '_', (string)$text);
         return $s === '' ? 'db' : $s;
     }
 
-    /** Apre una connessione mysqli dedicata; false e $errore se fallisce (anche in modalita' MYSQLI_REPORT_STRICT). */
-    function autobackup_connetti(array $db, &$errore)
+    /** Opens a dedicated mysqli connection; false and $error on failure (also under MYSQLI_REPORT_STRICT). */
+    function autobackup_connect(array $db, &$error)
     {
-        $errore = '';
-        if ((string)$db['nome'] === '' || (string)$db['utente'] === '') {
-            $errore = 'credenziali non compilate nel blocco di configurazione (utente o nome del database vuoti)';
+        $error = '';
+        if ((string)$db['name'] === '' || (string)$db['user'] === '') {
+            $error = 'credentials not filled in the configuration block (user or database name empty)';
             return false;
         }
         try {
             $c = mysqli_init();
             if (!$c) {
-                $errore = 'mysqli non disponibile';
+                $error = 'mysqli not available';
                 return false;
             }
             @mysqli_options($c, MYSQLI_OPT_CONNECT_TIMEOUT, 5);
-            $ok = @mysqli_real_connect($c, $db['host'], $db['utente'], $db['password'], $db['nome'], (int)$db['porta']);
+            $ok = @mysqli_real_connect($c, $db['host'], $db['user'], $db['password'], $db['name'], (int)$db['port']);
             if (!$ok) {
-                $errore = mysqli_connect_error();
+                $error = mysqli_connect_error();
                 return false;
             }
             if (!mysqli_set_charset($c, 'utf8mb4')) {
-                $errore = 'charset utf8mb4 non impostabile: ' . mysqli_error($c);
+                $error = 'cannot set charset utf8mb4: ' . mysqli_error($c);
                 mysqli_close($c);
                 return false;
             }
             return $c;
         } catch (Exception $e) {
-            $errore = $e->getMessage();
+            $error = $e->getMessage();
             return false;
         }
     }
 
-    /** Esegue una query e lancia un'eccezione con il messaggio di MySQL se fallisce. */
-    function autobackup_query($c, $sql, $modo = MYSQLI_STORE_RESULT)
+    /** Runs a query and throws an exception with the MySQL message on failure. */
+    function autobackup_query($c, $sql, $mode = MYSQLI_STORE_RESULT)
     {
-        $r = mysqli_query($c, $sql, $modo);
+        $r = mysqli_query($c, $sql, $mode);
         if ($r === false) {
-            throw new Exception('Query fallita (' . mysqli_error($c) . '): ' . substr($sql, 0, 120));
+            throw new Exception('Query failed (' . mysqli_error($c) . '): ' . substr($sql, 0, 120));
         }
         return $r;
     }
 
-    /** True se la tabella va esclusa dal dump. */
-    function autobackup_tabella_esclusa($nome, array $cfg)
+    /** True if the table must be excluded from the dump. */
+    function autobackup_table_excluded($name, array $cfg)
     {
-        $n = strtolower($nome);
-        foreach ($cfg['escludi_tabelle'] as $t) {
+        $n = strtolower($name);
+        foreach ($cfg['exclude_tables'] as $t) {
             if (strtolower($t) === $n) {
                 return true;
             }
         }
-        foreach ($cfg['escludi_prefissi'] as $p) {
+        foreach ($cfg['exclude_prefixes'] as $p) {
             if ($p !== '' && strpos($n, strtolower($p)) === 0) {
                 return true;
             }
@@ -318,140 +318,140 @@ if (!function_exists('autobackup_avvia')) {
         return false;
     }
 
-    /** Elenco delle tabelle del database: array('salva' => [...], 'escluse' => [...], 'viste' => [...]). */
-    function autobackup_tabelle($c, array $cfg)
+    /** Database tables: array('save' => [...], 'excluded' => [...], 'views' => [...]). */
+    function autobackup_tables($c, array $cfg)
     {
-        $out = array('salva' => array(), 'escluse' => array(), 'viste' => array());
+        $out = array('save' => array(), 'excluded' => array(), 'views' => array());
         $r = autobackup_query($c, 'SHOW FULL TABLES');
-        while ($riga = mysqli_fetch_row($r)) {
-            if (isset($riga[1]) && stripos($riga[1], 'VIEW') !== false) {
-                $out['viste'][] = $riga[0];
-            } elseif (autobackup_tabella_esclusa($riga[0], $cfg)) {
-                $out['escluse'][] = $riga[0];
+        while ($row = mysqli_fetch_row($r)) {
+            if (isset($row[1]) && stripos($row[1], 'VIEW') !== false) {
+                $out['views'][] = $row[0];
+            } elseif (autobackup_table_excluded($row[0], $cfg)) {
+                $out['excluded'][] = $row[0];
             } else {
-                $out['salva'][] = $riga[0];
+                $out['save'][] = $row[0];
             }
         }
         mysqli_free_result($r);
         return $out;
     }
 
-    /** Scrive sul file (gz o normale). */
-    function autobackup_scrivi($h, $gz, $testo)
+    /** Writes to the file (gz or plain). */
+    function autobackup_write($h, $gz, $text)
     {
-        $n = $gz ? gzwrite($h, $testo) : fwrite($h, $testo);
+        $n = $gz ? gzwrite($h, $text) : fwrite($h, $text);
         if ($n === false) {
-            throw new Exception('Scrittura del backup fallita (disco pieno o permessi)');
+            throw new Exception('Writing the backup failed (disk full or permissions)');
         }
     }
 
-    /** Valore SQL di un campo in base al tipo della colonna. */
-    function autobackup_valore_sql($c, $valore, $campo)
+    /** SQL literal of a field according to the column type. */
+    function autobackup_sql_value($c, $value, $field)
     {
-        if ($valore === null) {
+        if ($value === null) {
             return 'NULL';
         }
-        static $numerici = array(
+        static $numeric = array(
             MYSQLI_TYPE_TINY, MYSQLI_TYPE_SHORT, MYSQLI_TYPE_LONG, MYSQLI_TYPE_LONGLONG, MYSQLI_TYPE_INT24,
             MYSQLI_TYPE_FLOAT, MYSQLI_TYPE_DOUBLE, MYSQLI_TYPE_DECIMAL, MYSQLI_TYPE_NEWDECIMAL, MYSQLI_TYPE_YEAR,
         );
-        if (in_array($campo->type, $numerici, true) && preg_match('/^-?\d+(\.\d+)?([eE][-+]?\d+)?$/', $valore)) {
-            return $valore;
+        if (in_array($field->type, $numeric, true) && preg_match('/^-?\d+(\.\d+)?([eE][-+]?\d+)?$/', $value)) {
+            return $value;
         }
-        if ($campo->type === MYSQLI_TYPE_BIT || (($campo->flags & MYSQLI_BINARY_FLAG) && $campo->charsetnr == 63)) {
-            return $valore === '' ? "''" : '0x' . bin2hex($valore);
+        if ($field->type === MYSQLI_TYPE_BIT || (($field->flags & MYSQLI_BINARY_FLAG) && $field->charsetnr == 63)) {
+            return $value === '' ? "''" : '0x' . bin2hex($value);
         }
-        return "'" . mysqli_real_escape_string($c, $valore) . "'";
+        return "'" . mysqli_real_escape_string($c, $value) . "'";
     }
 
     /**
-     * Dump SQL del database in $destinazione (gzip se zlib e' disponibile).
-     * Restituisce array con tabelle, righe e byte scritti. Lancia eccezioni in caso di errore.
+     * SQL dump of the database to $target (gzip if zlib is available).
+     * Returns an array with tables, rows and bytes written. Throws on error.
      */
-    function autobackup_dump(array $cfg, array $db, $destinazione, $gz)
+    function autobackup_dump(array $cfg, array $db, $target, $gz)
     {
-        $c = autobackup_connetti($db, $errore);
+        $c = autobackup_connect($db, $error);
         if ($c === false) {
-            throw new Exception('Connessione al database fallita: ' . $errore);
+            throw new Exception('Database connection failed: ' . $error);
         }
-        $h = $gz ? @gzopen($destinazione, 'wb6') : @fopen($destinazione, 'wb');
+        $h = $gz ? @gzopen($target, 'wb6') : @fopen($target, 'wb');
         if (!$h) {
             mysqli_close($c);
-            throw new Exception('Impossibile creare il file ' . $destinazione);
+            throw new Exception('Cannot create file ' . $target);
         }
-        $righeTotali = 0;
-        $tabelleSalvate = 0;
+        $totalRows = 0;
+        $savedTables = 0;
         try {
-            $tabelle = autobackup_tabelle($c, $cfg);
-            // escape con backslash garantito (NO_BACKSLASH_ESCAPES disattivato) e lettura coerente
-            // di tutte le tabelle allo stesso istante (InnoDB), senza bloccare il sito
+            $tables = autobackup_tables($c, $cfg);
+            // guaranteed backslash escaping (NO_BACKSLASH_ESCAPES off) and consistent read
+            // of all tables at the same instant (InnoDB), without locking the site
             autobackup_query($c, "SET SESSION sql_mode = ''");
-            // i TIMESTAMP vengono letti in UTC, lo stesso fuso dichiarato in testa al file: il ripristino non li sposta
+            // TIMESTAMPs are read in UTC, the same zone declared at the top of the file: restoring does not shift them
             autobackup_query($c, "SET SESSION time_zone = '+00:00'");
             autobackup_query($c, 'SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ');
             autobackup_query($c, 'START TRANSACTION WITH CONSISTENT SNAPSHOT');
 
-            $testa = "-- autobackup.php - dump del database `" . $db['nome'] . "`\n"
-                . "-- Creato il " . autobackup_ora($cfg, 'Y-m-d H:i:s') . " (" . $cfg['fuso_orario'] . ")\n"
+            $head = "-- autobackup.php - dump of database `" . $db['name'] . "`\n"
+                . "-- Created on " . autobackup_now($cfg, 'Y-m-d H:i:s') . " (" . $cfg['timezone'] . ")\n"
                 . "-- Server: " . mysqli_get_server_info($c) . " - PHP " . PHP_VERSION . "\n"
-                . "-- Tabelle salvate: " . count($tabelle['salva'])
-                . ($tabelle['escluse'] ? " - escluse: " . implode(', ', $tabelle['escluse']) : '')
-                . ($tabelle['viste'] ? " - viste ignorate: " . implode(', ', $tabelle['viste']) : '') . "\n\n"
+                . "-- Tables saved: " . count($tables['save'])
+                . ($tables['excluded'] ? " - excluded: " . implode(', ', $tables['excluded']) : '')
+                . ($tables['views'] ? " - views skipped: " . implode(', ', $tables['views']) : '') . "\n\n"
                 . "SET NAMES utf8mb4;\n"
                 . "SET SQL_MODE = 'NO_AUTO_VALUE_ON_ZERO';\n"
                 . "SET time_zone = '+00:00';\n"
                 . "SET FOREIGN_KEY_CHECKS = 0;\n\n";
-            autobackup_scrivi($h, $gz, $testa);
+            autobackup_write($h, $gz, $head);
 
-            foreach ($tabelle['salva'] as $tabella) {
-                $tq = '`' . str_replace('`', '``', $tabella) . '`';
+            foreach ($tables['save'] as $table) {
+                $tq = '`' . str_replace('`', '``', $table) . '`';
                 $r = autobackup_query($c, 'SHOW CREATE TABLE ' . $tq);
                 $cr = mysqli_fetch_row($r);
                 mysqli_free_result($r);
-                autobackup_scrivi($h, $gz, "--\n-- Tabella " . $tq . "\n--\n\nDROP TABLE IF EXISTS " . $tq . ";\n" . $cr[1] . ";\n\n");
+                autobackup_write($h, $gz, "--\n-- Table " . $tq . "\n--\n\nDROP TABLE IF EXISTS " . $tq . ";\n" . $cr[1] . ";\n\n");
 
-                // colonne esplicite: salta quelle generate (non si possono inserire) e include le invisibili
-                $colonne = array();
+                // explicit columns: skip generated ones (they cannot be inserted) and include invisible ones
+                $columns = array();
                 $rc = autobackup_query($c, "SELECT COLUMN_NAME, EXTRA FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '"
-                    . mysqli_real_escape_string($c, $tabella) . "' ORDER BY ORDINAL_POSITION");
+                    . mysqli_real_escape_string($c, $table) . "' ORDER BY ORDINAL_POSITION");
                 while ($col = mysqli_fetch_row($rc)) {
-                    // EXTRA vale "VIRTUAL GENERATED" / "STORED GENERATED" per le colonne calcolate;
-                    // "DEFAULT_GENERATED" (default con espressione, es. CURRENT_TIMESTAMP) va invece salvata
+                    // EXTRA is "VIRTUAL GENERATED" / "STORED GENERATED" for computed columns;
+                    // "DEFAULT_GENERATED" (expression default, e.g. CURRENT_TIMESTAMP) must be saved instead
                     if (!preg_match('/(VIRTUAL|STORED) GENERATED/i', (string)$col[1])) {
-                        $colonne[] = '`' . str_replace('`', '``', $col[0]) . '`';
+                        $columns[] = '`' . str_replace('`', '``', $col[0]) . '`';
                     }
                 }
                 mysqli_free_result($rc);
-                if (!$colonne) {
-                    $tabelleSalvate++;
+                if (!$columns) {
+                    $savedTables++;
                     continue;
                 }
-                $r = autobackup_query($c, 'SELECT ' . implode(', ', $colonne) . ' FROM ' . $tq, MYSQLI_USE_RESULT);
-                $campi = mysqli_fetch_fields($r);
-                $inizio = 'INSERT INTO ' . $tq . ' (' . implode(', ', $colonne) . ") VALUES\n";
+                $r = autobackup_query($c, 'SELECT ' . implode(', ', $columns) . ' FROM ' . $tq, MYSQLI_USE_RESULT);
+                $fields = mysqli_fetch_fields($r);
+                $start = 'INSERT INTO ' . $tq . ' (' . implode(', ', $columns) . ") VALUES\n";
                 $buffer = '';
-                $righe = 0;
-                while ($riga = mysqli_fetch_row($r)) {
-                    $valori = array();
-                    foreach ($riga as $i => $v) {
-                        $valori[] = autobackup_valore_sql($c, $v, $campi[$i]);
+                $rows = 0;
+                while ($row = mysqli_fetch_row($r)) {
+                    $values = array();
+                    foreach ($row as $i => $v) {
+                        $values[] = autobackup_sql_value($c, $v, $fields[$i]);
                     }
-                    $buffer .= ($buffer === '' ? $inizio : ",\n") . '(' . implode(', ', $valori) . ')';
-                    $righe++;
-                    if (strlen($buffer) >= (int)$cfg['blocco_insert']) {
-                        autobackup_scrivi($h, $gz, $buffer . ";\n");
+                    $buffer .= ($buffer === '' ? $start : ",\n") . '(' . implode(', ', $values) . ')';
+                    $rows++;
+                    if (strlen($buffer) >= (int)$cfg['insert_block']) {
+                        autobackup_write($h, $gz, $buffer . ";\n");
                         $buffer = '';
                     }
                 }
                 mysqli_free_result($r);
                 if ($buffer !== '') {
-                    autobackup_scrivi($h, $gz, $buffer . ";\n");
+                    autobackup_write($h, $gz, $buffer . ";\n");
                 }
-                autobackup_scrivi($h, $gz, "\n");
-                $righeTotali += $righe;
-                $tabelleSalvate++;
+                autobackup_write($h, $gz, "\n");
+                $totalRows += $rows;
+                $savedTables++;
             }
-            autobackup_scrivi($h, $gz, "SET FOREIGN_KEY_CHECKS = 1;\n-- fine del dump\n");
+            autobackup_write($h, $gz, "SET FOREIGN_KEY_CHECKS = 1;\n-- end of dump\n");
         } catch (Exception $e) {
             if ($gz) { gzclose($h); } else { fclose($h); }
             mysqli_close($c);
@@ -459,37 +459,37 @@ if (!function_exists('autobackup_avvia')) {
         }
         if ($gz) { gzclose($h); } else { fclose($h); }
         mysqli_close($c);
-        return array('tabelle' => $tabelleSalvate, 'righe' => $righeTotali, 'byte' => (int)@filesize($destinazione));
+        return array('tables' => $savedTables, 'rows' => $totalRows, 'bytes' => (int)@filesize($target));
     }
 
     /**
-     * Backup del database nella cartella: una volta al giorno (o subito se $forzato, con ora nel nome).
-     * Restituisce array('stato' => 'creato'|'esiste'|'occupato', 'file' => ..., 'dettaglio' => ...).
+     * Database backup into the folder: once a day (or right now if $forced, with the time in the name).
+     * Returns array('status' => 'created'|'exists'|'busy', 'file' => ..., 'detail' => ...).
      */
-    function autobackup_db_giornaliero(array $cfg, $cartella, $forzato)
+    function autobackup_db_daily(array $cfg, $folder, $forced)
     {
         $db = $cfg['db'];
         $gz = function_exists('gzopen');
-        $nome = 'db_' . autobackup_nome_sicuro($db['nome']) . '_'
-            . autobackup_ora($cfg, $forzato ? 'Y-m-d_His' : 'Y-m-d') . ($gz ? '.sql.gz' : '.sql');
-        $dest = $cartella . '/' . $nome;
-        if (!$forzato && file_exists($dest)) {
-            return array('stato' => 'esiste', 'file' => $nome, 'dettaglio' => '');
+        $name = 'db_' . autobackup_safe_name($db['name']) . '_'
+            . autobackup_now($cfg, $forced ? 'Y-m-d_His' : 'Y-m-d') . ($gz ? '.sql.gz' : '.sql');
+        $dest = $folder . '/' . $name;
+        if (!$forced && file_exists($dest)) {
+            return array('status' => 'exists', 'file' => $name, 'detail' => '');
         }
-        $lock = @fopen($cartella . '/.lock', 'c');
+        $lock = @fopen($folder . '/.lock', 'c');
         if (!$lock) {
-            throw new Exception('Impossibile creare il file di lock in ' . $cartella);
+            throw new Exception('Cannot create the lock file in ' . $folder);
         }
         if (!flock($lock, LOCK_EX | LOCK_NB)) {
             fclose($lock);
-            return array('stato' => 'occupato', 'file' => $nome, 'dettaglio' => 'un altro backup e\' in corso');
+            return array('status' => 'busy', 'file' => $name, 'detail' => 'another backup is running');
         }
         try {
-            if (!$forzato && file_exists($dest)) {
-                return array('stato' => 'esiste', 'file' => $nome, 'dettaglio' => '');
+            if (!$forced && file_exists($dest)) {
+                return array('status' => 'exists', 'file' => $name, 'detail' => '');
             }
             $tmp = $dest . '.tmp';
-            $inizio = microtime(true);
+            $start = microtime(true);
             try {
                 $info = autobackup_dump($cfg, $db, $tmp, $gz);
             } catch (Exception $e) {
@@ -498,69 +498,69 @@ if (!function_exists('autobackup_avvia')) {
             }
             if (!@rename($tmp, $dest)) {
                 @unlink($tmp);
-                throw new Exception('Impossibile rinominare il file temporaneo in ' . $nome);
+                throw new Exception('Cannot rename the temporary file to ' . $name);
             }
-            autobackup_ruota($cartella, '/^db_.+\.sql(\.gz)?$/', (int)$cfg['conserva_db']);
-            $dettaglio = $info['tabelle'] . ' tabelle, ' . $info['righe'] . ' righe, '
-                . autobackup_dimensione($info['byte']) . ', ' . round(microtime(true) - $inizio, 2) . ' s';
-            return array('stato' => 'creato', 'file' => $nome, 'dettaglio' => $dettaglio);
+            autobackup_rotate($folder, '/^db_.+\.sql(\.gz)?$/', (int)$cfg['keep_db']);
+            $detail = $info['tables'] . ' tables, ' . $info['rows'] . ' rows, '
+                . autobackup_size($info['bytes']) . ', ' . round(microtime(true) - $start, 2) . ' s';
+            return array('status' => 'created', 'file' => $name, 'detail' => $detail);
         } finally {
             flock($lock, LOCK_UN);
             fclose($lock);
         }
     }
 
-    /** Conserva solo gli ultimi $conserva file che corrispondono al pattern (ordine per nome = per data). */
-    function autobackup_ruota($cartella, $pattern, $conserva)
+    /** Keeps only the last $keep files matching the pattern (name order = date order). */
+    function autobackup_rotate($folder, $pattern, $keep)
     {
-        if ($conserva < 1) {
+        if ($keep < 1) {
             return 0;
         }
-        $file = array();
-        foreach ((array)@scandir($cartella) as $f) {
+        $files = array();
+        foreach ((array)@scandir($folder) as $f) {
             if (preg_match($pattern, $f)) {
-                $file[] = $f;
+                $files[] = $f;
             }
         }
-        rsort($file, SORT_STRING);
-        $cancellati = 0;
-        foreach (array_slice($file, $conserva) as $f) {
-            if (@unlink($cartella . '/' . $f)) {
-                $cancellati++;
+        rsort($files, SORT_STRING);
+        $deleted = 0;
+        foreach (array_slice($files, $keep) as $f) {
+            if (@unlink($folder . '/' . $f)) {
+                $deleted++;
             }
         }
-        return $cancellati;
+        return $deleted;
     }
 
-    /** Dimensione leggibile. */
-    function autobackup_dimensione($byte)
+    /** Human-readable size. */
+    function autobackup_size($bytes)
     {
-        $byte = (float)$byte;
-        if ($byte >= 1048576) {
-            return round($byte / 1048576, 1) . ' MB';
+        $bytes = (float)$bytes;
+        if ($bytes >= 1048576) {
+            return round($bytes / 1048576, 1) . ' MB';
         }
-        if ($byte >= 1024) {
-            return round($byte / 1024) . ' KB';
+        if ($bytes >= 1024) {
+            return round($bytes / 1024) . ' KB';
         }
-        return (int)$byte . ' byte';
+        return (int)$bytes . ' bytes';
     }
 
-    /** Percorso relativo alla radice (separatore /) di un elemento del sito. */
-    function autobackup_relativo($radice, $percorso)
+    /** Path of a site item relative to the root (with / separators). */
+    function autobackup_relative($root, $path)
     {
-        $rel = substr($percorso, strlen($radice));
+        $rel = substr($path, strlen($root));
         return ltrim(str_replace('\\', '/', $rel), '/');
     }
 
-    /** True se il percorso relativo e' tra le esclusioni (voce esatta o cartella padre). */
-    function autobackup_sito_escluso($relativo, array $esclusi)
+    /** True if the relative path is excluded (exact entry or parent folder). */
+    function autobackup_site_excluded($relative, array $excluded)
     {
-        foreach ($esclusi as $e) {
+        foreach ($excluded as $e) {
             $e = trim(str_replace('\\', '/', $e), '/');
             if ($e === '') {
                 continue;
             }
-            if ($relativo === $e || strpos($relativo, $e . '/') === 0) {
+            if ($relative === $e || strpos($relative, $e . '/') === 0) {
                 return true;
             }
         }
@@ -568,104 +568,104 @@ if (!function_exists('autobackup_avvia')) {
     }
 
     /**
-     * Archivio compresso di tutto il sito (zip, oppure tar.gz se ZipArchive manca) con dentro un dump del database.
-     * Restituisce array('file' => nome, 'dettaglio' => ...).
+     * Compressed archive of the whole site (zip, or tar.gz if ZipArchive is missing) with a database dump inside.
+     * Returns array('file' => name, 'detail' => ...).
      */
-    function autobackup_sito(array $cfg, $cartella)
+    function autobackup_site(array $cfg, $folder)
     {
-        $radice = realpath($cfg['radice_sito']);
-        if ($radice === false || !is_dir($radice)) {
-            throw new Exception('Radice del sito non trovata: ' . $cfg['radice_sito']);
+        $root = realpath($cfg['site_root']);
+        if ($root === false || !is_dir($root)) {
+            throw new Exception('Site root not found: ' . $cfg['site_root']);
         }
-        $usaZip = class_exists('ZipArchive');
-        if (!$usaZip && !class_exists('PharData')) {
-            throw new Exception('Ne\' ZipArchive ne\' PharData sono disponibili: impossibile creare l\'archivio');
+        $useZip = class_exists('ZipArchive');
+        if (!$useZip && !class_exists('PharData')) {
+            throw new Exception('Neither ZipArchive nor PharData is available: cannot create the archive');
         }
-        $inizio = microtime(true);
+        $start = microtime(true);
         $db = $cfg['db'];
         $gz = function_exists('gzopen');
 
-        // esclusioni: quelle configurate + la cartella dei backup se sta dentro al sito
-        $esclusi = (array)$cfg['sito_escludi'];
-        $cartellaReale = realpath($cartella);
-        if ($cartellaReale !== false && strpos($cartellaReale, $radice . DIRECTORY_SEPARATOR) === 0) {
-            $esclusi[] = autobackup_relativo($radice, $cartellaReale);
+        // exclusions: the configured ones + the backup folder if it sits inside the site
+        $excluded = (array)$cfg['site_exclude'];
+        $realFolder = realpath($folder);
+        if ($realFolder !== false && strpos($realFolder, $root . DIRECTORY_SEPARATOR) === 0) {
+            $excluded[] = autobackup_relative($root, $realFolder);
         }
 
-        // dump del database in un file temporaneo da includere nell'archivio
-        $tmpDb = $cartella . '/.db_' . uniqid('', true) . ($gz ? '.sql.gz' : '.sql');
+        // database dump to a temporary file, to be added to the archive
+        $tmpDb = $folder . '/.db_' . uniqid('', true) . ($gz ? '.sql.gz' : '.sql');
         $infoDb = autobackup_dump($cfg, $db, $tmpDb, $gz);
-        $nomeDb = '_database_' . autobackup_nome_sicuro($db['nome']) . ($gz ? '.sql.gz' : '.sql');
+        $dbName = '_database_' . autobackup_safe_name($db['name']) . ($gz ? '.sql.gz' : '.sql');
 
-        $timbro = autobackup_ora($cfg, 'Y-m-d_His');
-        $nome = 'sito_' . $timbro . ($usaZip ? '.zip' : '.tar.gz');
-        $dest = $cartella . '/' . $nome;
-        $tmp = $cartella . '/.sito_' . $timbro . '_' . substr(md5(uniqid('', true)), 0, 6) . ($usaZip ? '.zip' : '.tar');
-        $nFile = 0;
-        $byteOriginali = 0;
+        $stamp = autobackup_now($cfg, 'Y-m-d_His');
+        $name = 'site_' . $stamp . ($useZip ? '.zip' : '.tar.gz');
+        $dest = $folder . '/' . $name;
+        $tmp = $folder . '/.site_' . $stamp . '_' . substr(md5(uniqid('', true)), 0, 6) . ($useZip ? '.zip' : '.tar');
+        $nFiles = 0;
+        $originalBytes = 0;
         try {
-            if ($usaZip) {
+            if ($useZip) {
                 $zip = new ZipArchive();
-                $apertura = $zip->open($tmp, ZipArchive::CREATE | ZipArchive::OVERWRITE);
-                if ($apertura !== true) {
-                    throw new Exception('ZipArchive non apre ' . $tmp . ' (codice ' . $apertura . ')');
+                $opened = $zip->open($tmp, ZipArchive::CREATE | ZipArchive::OVERWRITE);
+                if ($opened !== true) {
+                    throw new Exception('ZipArchive cannot open ' . $tmp . ' (code ' . $opened . ')');
                 }
-                $zip->addFile($tmpDb, $nomeDb);
+                $zip->addFile($tmpDb, $dbName);
             } else {
                 $zip = new PharData($tmp);
-                $zip->addFile($tmpDb, $nomeDb);
+                $zip->addFile($tmpDb, $dbName);
             }
 
             $iter = new RecursiveIteratorIterator(
                 new RecursiveCallbackFilterIterator(
-                    new RecursiveDirectoryIterator($radice, FilesystemIterator::SKIP_DOTS),
-                    function ($corrente, $chiave, $iteratore) use ($radice, $esclusi) {
-                        return !autobackup_sito_escluso(autobackup_relativo($radice, $corrente->getPathname()), $esclusi);
+                    new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS),
+                    function ($current, $key, $iterator) use ($root, $excluded) {
+                        return !autobackup_site_excluded(autobackup_relative($root, $current->getPathname()), $excluded);
                     }
                 ),
                 RecursiveIteratorIterator::SELF_FIRST
             );
-            $giaCompressi = array('jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'woff', 'woff2', 'zip', 'gz', 'mp4', 'pdf');
-            $storePossibile = $usaZip && method_exists($zip, 'setCompressionName');
-            foreach ($iter as $elemento) {
-                $rel = autobackup_relativo($radice, $elemento->getPathname());
-                if ($elemento->isDir()) {
+            $alreadyCompressed = array('jpg', 'jpeg', 'png', 'gif', 'webp', 'avif', 'woff', 'woff2', 'zip', 'gz', 'mp4', 'pdf');
+            $canStore = $useZip && method_exists($zip, 'setCompressionName');
+            foreach ($iter as $item) {
+                $rel = autobackup_relative($root, $item->getPathname());
+                if ($item->isDir()) {
                     $zip->addEmptyDir($rel);
                     continue;
                 }
-                if (!$elemento->isFile() || !$elemento->isReadable()) {
+                if (!$item->isFile() || !$item->isReadable()) {
                     continue;
                 }
-                $zip->addFile($elemento->getPathname(), $rel);
-                if ($storePossibile && in_array(strtolower($elemento->getExtension()), $giaCompressi, true)) {
-                    $zip->setCompressionName($rel, ZipArchive::CM_STORE); // gia' compressi: solo archiviati, piu' veloce
+                $zip->addFile($item->getPathname(), $rel);
+                if ($canStore && in_array(strtolower($item->getExtension()), $alreadyCompressed, true)) {
+                    $zip->setCompressionName($rel, ZipArchive::CM_STORE); // already compressed: stored only, faster
                 }
-                $nFile++;
-                $byteOriginali += (int)$elemento->getSize();
-                // ZipArchive tiene aperti i file fino alla chiusura: ogni 500 file chiude e riapre l'archivio
-                if ($usaZip && $nFile % 500 === 0) {
+                $nFiles++;
+                $originalBytes += (int)$item->getSize();
+                // ZipArchive keeps files open until close: every 500 files close and reopen the archive
+                if ($useZip && $nFiles % 500 === 0) {
                     if (!$zip->close()) {
-                        throw new Exception('Chiusura intermedia dello zip fallita: ' . $zip->getStatusString());
+                        throw new Exception('Intermediate zip close failed: ' . $zip->getStatusString());
                     }
                     if ($zip->open($tmp) !== true) {
-                        throw new Exception('Riapertura dello zip fallita');
+                        throw new Exception('Reopening the zip failed');
                     }
                 }
             }
 
-            if ($usaZip) {
+            if ($useZip) {
                 if (!$zip->close()) {
-                    throw new Exception('Chiusura dello zip fallita: ' . $zip->getStatusString());
+                    throw new Exception('Zip close failed: ' . $zip->getStatusString());
                 }
                 if (!@rename($tmp, $dest)) {
-                    throw new Exception('Impossibile rinominare l\'archivio in ' . $nome);
+                    throw new Exception('Cannot rename the archive to ' . $name);
                 }
             } else {
                 $zip->compress(Phar::GZ);
                 unset($zip);
                 @unlink($tmp);
                 if (!@rename($tmp . '.gz', $dest)) {
-                    throw new Exception('Impossibile rinominare l\'archivio in ' . $nome);
+                    throw new Exception('Cannot rename the archive to ' . $name);
                 }
             }
         } catch (Exception $e) {
@@ -675,142 +675,142 @@ if (!function_exists('autobackup_avvia')) {
             throw $e;
         }
         @unlink($tmpDb);
-        autobackup_ruota($cartella, '/^sito_.+\.(zip|tar\.gz)$/', (int)$cfg['conserva_sito']);
-        $dettaglio = $nFile . ' file, ' . autobackup_dimensione($byteOriginali) . ' originali -> '
-            . autobackup_dimensione((int)@filesize($dest)) . ', database ' . $infoDb['tabelle'] . ' tabelle/'
-            . $infoDb['righe'] . ' righe, ' . round(microtime(true) - $inizio, 1) . ' s';
-        return array('file' => $nome, 'dettaglio' => $dettaglio);
+        autobackup_rotate($folder, '/^site_.+\.(zip|tar\.gz)$/', (int)$cfg['keep_site']);
+        $detail = $nFiles . ' files, ' . autobackup_size($originalBytes) . ' original -> '
+            . autobackup_size((int)@filesize($dest)) . ', database ' . $infoDb['tables'] . ' tables/'
+            . $infoDb['rows'] . ' rows, ' . round(microtime(true) - $start, 1) . ' s';
+        return array('file' => $name, 'detail' => $detail);
     }
 
-    /** Controlli di configurazione e ambiente (azione test): righe del rapporto, $ok = tutti superati. */
+    /** Configuration and environment checks (test action): report lines, $ok = all passed. */
     function autobackup_test(array $cfg, &$ok)
     {
         $ok = true;
         $r = array();
-        $riga = function ($esito, $testo) use (&$r, &$ok) {
-            $r[] = ($esito ? 'OK      ' : 'ERRORE  ') . $testo;
-            if (!$esito) {
+        $line = function ($passed, $text) use (&$r, &$ok) {
+            $r[] = ($passed ? 'OK       ' : 'ERROR    ') . $text;
+            if (!$passed) {
                 $ok = false;
             }
         };
 
-        // 1. percorsi
-        $r[] = '== Percorsi';
-        $r[] = '        script: ' . __FILE__;
-        $r[] = '        cartella di lavoro corrente: ' . (($cwd = @getcwd()) !== false ? $cwd : 'non rilevabile');
-        $r[] = '        radice web (DOCUMENT_ROOT): ' . (isset($_SERVER['DOCUMENT_ROOT']) && $_SERVER['DOCUMENT_ROOT'] !== '' ? $_SERVER['DOCUMENT_ROOT'] : 'non impostata');
-        $radice = realpath($cfg['radice_sito']);
-        $riga($radice !== false && is_dir($radice) && is_readable($radice), 'radice del sito: ' . ($radice !== false ? $radice : $cfg['radice_sito']));
-        $cartella = autobackup_cartella($cfg, $errore);
-        if ($cartella === false) {
-            $riga(false, 'cartella dei backup: ' . $cfg['cartella'] . ' (' . $errore . ')');
+        // 1. paths
+        $r[] = '== Paths';
+        $r[] = '         script: ' . __FILE__;
+        $r[] = '         current working directory: ' . (($cwd = @getcwd()) !== false ? $cwd : 'not detectable');
+        $r[] = '         web root (DOCUMENT_ROOT): ' . (isset($_SERVER['DOCUMENT_ROOT']) && $_SERVER['DOCUMENT_ROOT'] !== '' ? $_SERVER['DOCUMENT_ROOT'] : 'not set');
+        $root = realpath($cfg['site_root']);
+        $line($root !== false && is_dir($root) && is_readable($root), 'site root: ' . ($root !== false ? $root : $cfg['site_root']));
+        $folder = autobackup_folder($cfg, $error);
+        if ($folder === false) {
+            $line(false, 'backup folder: ' . $cfg['folder'] . ' (' . $error . ')');
         } else {
-            $reale = realpath($cartella);
-            $riga(true, 'cartella dei backup: ' . $reale);
-            $riga(file_exists($cartella . '/.htaccess') && file_exists($cartella . '/index.php'), 'protezioni .htaccess e index.php presenti nella cartella');
+            $real = realpath($folder);
+            $line(true, 'backup folder: ' . $real);
+            $line(file_exists($folder . '/.htaccess') && file_exists($folder . '/index.php'), 'protective .htaccess and index.php present in the folder');
             $docroot = isset($_SERVER['DOCUMENT_ROOT']) && $_SERVER['DOCUMENT_ROOT'] !== '' ? realpath($_SERVER['DOCUMENT_ROOT']) : false;
-            $dentroWeb = false;
-            foreach (array($docroot, $radice) as $base) {
-                if ($base !== false && $reale !== false && strpos($reale . DIRECTORY_SEPARATOR, $base . DIRECTORY_SEPARATOR) === 0) {
-                    $dentroWeb = true;
+            $insideWeb = false;
+            foreach (array($docroot, $root) as $base) {
+                if ($base !== false && $real !== false && strpos($real . DIRECTORY_SEPARATOR, $base . DIRECTORY_SEPARATOR) === 0) {
+                    $insideWeb = true;
                 }
             }
-            $r[] = ($dentroWeb ? 'AVVISO  ' : 'OK      ') . ($dentroWeb
-                ? 'la cartella sta dentro la radice web: resta protetta solo dal suo .htaccess'
-                : 'la cartella sta fuori dalla radice web');
+            $r[] = ($insideWeb ? 'WARNING  ' : 'OK       ') . ($insideWeb
+                ? 'the folder is inside the web root: it is protected only by its .htaccess'
+                : 'the folder is outside the web root');
 
-            // 2. scrittura
-            $r[] = '== Scrittura';
-            $prova = $cartella . '/.test_' . substr(md5(uniqid('', true)), 0, 8);
-            $contenuto = 'autobackup ' . microtime(true);
-            $scritto = @file_put_contents($prova, $contenuto) !== false;
-            $riletto = $scritto && @file_get_contents($prova) === $contenuto;
-            @unlink($prova);
-            $riga($scritto && $riletto && !file_exists($prova), 'creazione, lettura e cancellazione di un file di prova');
-            $libero = @disk_free_space($cartella);
-            $riga($libero === false || $libero > 52428800, 'spazio libero: ' . ($libero === false ? 'non rilevabile' : autobackup_dimensione($libero)));
+            // 2. writing
+            $r[] = '== Writing';
+            $probe = $folder . '/.test_' . substr(md5(uniqid('', true)), 0, 8);
+            $content = 'autobackup ' . microtime(true);
+            $written = @file_put_contents($probe, $content) !== false;
+            $readBack = $written && @file_get_contents($probe) === $content;
+            @unlink($probe);
+            $line($written && $readBack && !file_exists($probe), 'creating, reading and deleting a probe file');
+            $free = @disk_free_space($folder);
+            $line($free === false || $free > 52428800, 'free space: ' . ($free === false ? 'not detectable' : autobackup_size($free)));
         }
 
         // 3. database
         $r[] = '== Database';
         $db = $cfg['db'];
-        $r[] = '        connessione configurata: ' . $db['utente'] . '@' . $db['host'] . ':' . $db['porta'] . ' database ' . $db['nome'];
-        $c = autobackup_connetti($db, $errore);
+        $r[] = '         configured connection: ' . $db['user'] . '@' . $db['host'] . ':' . $db['port'] . ' database ' . $db['name'];
+        $c = autobackup_connect($db, $error);
         if ($c === false) {
-            $riga(false, 'connessione: ' . $errore);
+            $line(false, 'connection: ' . $error);
         } else {
-            $riga(true, 'connessione riuscita, server MySQL ' . mysqli_get_server_info($c));
+            $line(true, 'connected, MySQL server ' . mysqli_get_server_info($c));
             try {
-                $tab = autobackup_tabelle($c, $cfg);
-                $riga(count($tab['salva']) > 0, 'tabelle da salvare: ' . count($tab['salva']) . ' (' . implode(', ', $tab['salva']) . ')');
-                $r[] = '        tabelle escluse: ' . (count($tab['escluse']) ? implode(', ', $tab['escluse']) : 'nessuna');
-                if ($tab['viste']) {
-                    $r[] = '        viste ignorate: ' . implode(', ', $tab['viste']);
+                $tab = autobackup_tables($c, $cfg);
+                $line(count($tab['save']) > 0, 'tables to save: ' . count($tab['save']) . ' (' . implode(', ', $tab['save']) . ')');
+                $r[] = '         excluded tables: ' . (count($tab['excluded']) ? implode(', ', $tab['excluded']) : 'none');
+                if ($tab['views']) {
+                    $r[] = '         views skipped: ' . implode(', ', $tab['views']);
                 }
             } catch (Exception $e) {
-                $riga(false, 'elenco tabelle: ' . $e->getMessage());
+                $line(false, 'table list: ' . $e->getMessage());
             }
             mysqli_close($c);
         }
 
-        // 4. ambiente
-        $r[] = '== Ambiente';
-        $riga(true, 'PHP ' . PHP_VERSION . ' (' . PHP_SAPI . ')');
-        $riga(function_exists('gzopen'), 'compressione gzip (zlib) ' . (function_exists('gzopen') ? 'disponibile' : 'assente: i dump saranno .sql non compressi'));
+        // 4. environment
+        $r[] = '== Environment';
+        $line(true, 'PHP ' . PHP_VERSION . ' (' . PHP_SAPI . ')');
+        $line(function_exists('gzopen'), 'gzip compression (zlib) ' . (function_exists('gzopen') ? 'available' : 'missing: dumps will be uncompressed .sql'));
         $zipOk = class_exists('ZipArchive');
-        $r[] = ($zipOk || class_exists('PharData') ? 'OK      ' : 'ERRORE  ') . 'archivio del sito: '
-            . ($zipOk ? 'ZipArchive disponibile' : (class_exists('PharData') ? 'ZipArchive assente, verra\' usato PharData (tar.gz)' : 'nessuna libreria disponibile'));
+        $r[] = ($zipOk || class_exists('PharData') ? 'OK       ' : 'ERROR    ') . 'site archive: '
+            . ($zipOk ? 'ZipArchive available' : (class_exists('PharData') ? 'ZipArchive missing, PharData (tar.gz) will be used' : 'no library available'));
         if (!$zipOk && !class_exists('PharData')) {
             $ok = false;
         }
-        $r[] = '        memory_limit ' . ini_get('memory_limit') . ', max_execution_time ' . ini_get('max_execution_time') . ', flock ' . (function_exists('flock') ? 'si' : 'no');
+        $r[] = '         memory_limit ' . ini_get('memory_limit') . ', max_execution_time ' . ini_get('max_execution_time') . ', flock ' . (function_exists('flock') ? 'yes' : 'no');
         try {
-            new DateTimeZone($cfg['fuso_orario']);
-            $riga(true, 'fuso orario ' . $cfg['fuso_orario'] . ', adesso ' . autobackup_ora($cfg, 'Y-m-d H:i:s'));
+            new DateTimeZone($cfg['timezone']);
+            $line(true, 'time zone ' . $cfg['timezone'] . ', now ' . autobackup_now($cfg, 'Y-m-d H:i:s'));
         } catch (Exception $e) {
-            $riga(false, 'fuso orario non valido: ' . $cfg['fuso_orario']);
+            $line(false, 'invalid time zone: ' . $cfg['timezone']);
         }
-        $r[] = ($cfg['chiave_web'] !== '' ? 'OK      ' : 'AVVISO  ') . 'chiave web ' . ($cfg['chiave_web'] !== '' ? 'impostata' : 'vuota: azioni dal browser disabilitate');
-        // chiave di esempio, nuova a ogni esecuzione: da copiare in 'chiave_web' se si vuole cambiarla
+        $r[] = ($cfg['web_key'] !== '' ? 'OK       ' : 'WARNING  ') . 'web key ' . ($cfg['web_key'] !== '' ? 'set' : 'empty: browser actions disabled');
+        // sample key, new on every run: copy it into 'web_key' if you want to change it
         try {
-            $esempio = bin2hex(random_bytes(16));
+            $sample = bin2hex(random_bytes(16));
         } catch (Exception $e) {
-            $esempio = md5(uniqid('', true) . mt_rand());
+            $sample = md5(uniqid('', true) . mt_rand());
         }
-        $r[] = '        esempio di chiave da usare in chiave_web (generata ora, non salvata): ' . $esempio;
+        $r[] = '         sample key for web_key (generated now, not saved): ' . $sample;
 
-        // 5. stato
-        $r[] = '== Stato';
-        if ($cartella !== false) {
+        // 5. status
+        $r[] = '== Status';
+        if ($folder !== false) {
             $gz = function_exists('gzopen');
-            $atteso = 'db_' . autobackup_nome_sicuro($db['nome']) . '_' . autobackup_ora($cfg, 'Y-m-d') . ($gz ? '.sql.gz' : '.sql');
-            $r[] = '        file di oggi: ' . $atteso . (file_exists($cartella . '/' . $atteso) ? ' (gia\' presente)' : ' (non ancora creato)');
+            $expected = 'db_' . autobackup_safe_name($db['name']) . '_' . autobackup_now($cfg, 'Y-m-d') . ($gz ? '.sql.gz' : '.sql');
+            $r[] = '         today\'s file: ' . $expected . (file_exists($folder . '/' . $expected) ? ' (already present)' : ' (not created yet)');
             $nDb = 0;
-            $nSito = 0;
-            foreach ((array)@scandir($cartella) as $f) {
+            $nSite = 0;
+            foreach ((array)@scandir($folder) as $f) {
                 if (preg_match('/^db_.+\.sql(\.gz)?$/', $f)) {
                     $nDb++;
-                } elseif (preg_match('/^sito_.+\.(zip|tar\.gz)$/', $f)) {
-                    $nSito++;
+                } elseif (preg_match('/^site_.+\.(zip|tar\.gz)$/', $f)) {
+                    $nSite++;
                 }
             }
-            $r[] = '        backup presenti: ' . $nDb . ' del database (conserva ' . (int)$cfg['conserva_db'] . '), ' . $nSito . ' del sito (conserva ' . (int)$cfg['conserva_sito'] . ')';
-            $log = $cartella . '/autobackup.log';
+            $r[] = '         backups present: ' . $nDb . ' database (keep ' . (int)$cfg['keep_db'] . '), ' . $nSite . ' site (keep ' . (int)$cfg['keep_site'] . ')';
+            $log = $folder . '/autobackup.log';
             if (is_file($log)) {
-                $righeLog = array_slice(array_filter(array_map('rtrim', (array)@file($log))), -5);
-                $r[] = '        ultime righe del log:';
-                foreach ($righeLog as $l) {
-                    $r[] = '          ' . $l;
+                $logLines = array_slice(array_filter(array_map('rtrim', (array)@file($log))), -5);
+                $r[] = '         last log lines:';
+                foreach ($logLines as $l) {
+                    $r[] = '           ' . $l;
                 }
             } else {
-                $r[] = '        log: ancora vuoto';
+                $r[] = '         log: still empty';
             }
         }
         $r[] = '';
-        $r[] = $ok ? 'Tutti i controlli superati.' : 'Alcuni controlli non sono superati: vedi le righe ERRORE.';
+        $r[] = $ok ? 'All checks passed.' : 'Some checks failed: see the ERROR lines.';
         return $r;
     }
 }
 
-autobackup_avvia($autobackup_config);
+autobackup_run($autobackup_config);
 unset($autobackup_config);
